@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
-
+from news import collect_news
 import ccxt
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
-
+from analyze import analyze
+from label import label_signals
 from db import Candle, Derivative, engine, init_db, ms_to_dt
 from fng import collect_fng
 
@@ -33,7 +34,7 @@ def collect_derivatives(ex, session, symbol):
     row = dict(
         exchange=EXCHANGE, symbol=symbol, ts=now,
         funding_rate=fr.get("fundingRate"),
-        next_funding_ts=ms_to_dt(fr.get("nextFundingTimestamp") or fr.get("fundingTimestamp")),
+        next_funding_ts=ms_to_dt(fr.get("fundingTimestamp") or fr.get("nextFundingTimestamp")),
         oi_contracts=oi.get("openInterestAmount"),
         oi_base=oi.get("baseVolume"),
         raw_funding=fr,
@@ -41,6 +42,15 @@ def collect_derivatives(ex, session, symbol):
     )
     session.execute(insert(Derivative).values([row]).on_conflict_do_nothing())
 
+
+def run_analyze():
+    try:
+        out = analyze(0.05, 1000)
+        print(f"[analyze] {out.get('signal')} conf={out.get('confidence')} "
+              f"model={out.get('model')} skipped={out.get('skipped', False)} "
+              f"{str(out.get('problems') or '')[:150]}")
+    except Exception as e:
+        print("[analyze] failed:", e)
 
 def run_once():
     ex = getattr(ccxt, EXCHANGE)({"enableRateLimit": True})
@@ -58,13 +68,36 @@ def safe_run():
     except Exception as e:
         print("run failed:", e)  # یک خطای موقت نباید برنامه رو بکشه
 
+def run_label():
+    try:
+        label_signals()
+    except Exception as e:
+        print("[label] failed:", e)
+
 
 if __name__ == "__main__":
     init_db()
     safe_run()  # یک بار فوراً
+    try:
+        collect_fng(limit=2)
+        collect_news()
+    except Exception as e:
+        print("initial fng/news failed:", e)
+
     sched = BlockingScheduler(timezone="UTC")
     sched.add_job(safe_run, "cron", minute="*", second=5,
                   max_instances=1, coalesce=True)
+    print("scheduler started")
     sched.add_job(lambda: collect_fng(limit=2), "cron", minute=10)
-    print("scheduler started, Ctrl+C to stop")
+    print("fng scheduler started")
+    sched.add_job(collect_news, "interval", minutes=3,
+                  max_instances=1, coalesce=True)
+    print("news scheduler started")
+    sched.add_job(run_analyze, "cron", minute="*/5", second=20,
+                  max_instances=1, coalesce=True)
+    print("analyze scheduler started")
+    sched.add_job(run_label, "cron", minute="*/5", second=50,
+                  max_instances=1, coalesce=True)
+    print("labe scheduler started\n")
+    print("scheduler all started, Ctrl+C to stop")
     sched.start()

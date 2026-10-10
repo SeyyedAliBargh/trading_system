@@ -29,3 +29,16 @@ var/
 
 # db
 *.db
+
+.env
+
+
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.*
+.env.*
+!.env.example
+*.log
+.vscode/
+.idea/
