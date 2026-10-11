@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from db import Derivative, FearGreed, engine
 from features import EXCHANGE, TIMEFRAMES, compute_features, load_candles
 from news import get_recent_news
-
+from deriv_features import derivative_features
 PERP = "BTC/USDT:USDT"
 N_CANDLES = 20
 TF_MIN = {"1m": 1, "15m": 15, "1h": 60}
@@ -94,6 +94,7 @@ def build_llm_input(btc_amount, usdt_cash):
         "candles": candles,
         "features": features,
         "derivatives": deriv,
+        "derivative_features": derivative_features(),
         "fear_greed": fng,
         "news": get_recent_news(minutes=60),
         "portfolio": {"btc": btc_amount, "usdt": usdt_cash},

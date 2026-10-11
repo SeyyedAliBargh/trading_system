@@ -134,6 +134,7 @@ Model and provider names change without notice on free tiers, so they are kept s
 | `candles` | Last 20 candles for 1m, 15m and 1h as `[ts, o, h, l, c, v]` | Short-term move + larger trend |
 | `features` | RSI14, distance from EMA20/EMA50, ATR14 %, relative volume (latest value per timeframe) | Don't make the LLM do the math |
 | `derivatives` | `funding_rate`, `next_funding_ts`, `oi_base_btc`, `age_min` | Crowding in leveraged positions |
+| `derivative_features` | `funding_rate`, `mins_to_funding`, `oi_btc`, `oi_chg_5m/15m/60m_pct`, `price_chg_15m_pct` | OI change vs. price change shows whether a move is driven by new positions or by closing ones |
 | `fear_greed` | Today's value and class | Broad market background |
 | `news` | News from the last 60 minutes | Events not yet reflected in price |
 | `portfolio` | `{btc, usdt}` | "Buy or sell" depends on holdings |
