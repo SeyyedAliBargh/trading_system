@@ -36,9 +36,11 @@ var/
 *.db-journal
 *.db-wal
 *.db-shm
+logs/
 *.db.*
 .env.*
 !.env.example
 *.log
 .vscode/
 .idea/
+.claude

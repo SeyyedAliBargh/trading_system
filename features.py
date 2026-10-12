@@ -1,8 +1,10 @@
-# pip install pandas
+import logging
 import pandas as pd
 from sqlalchemy import text
 
 from db import engine
+
+logger = logging.getLogger(__name__)
 
 EXCHANGE = "okx"
 SPOT = "BTC/USDT"
@@ -66,6 +68,8 @@ def compute_features(df):
     }
 
 if __name__ == "__main__":
+    from log_config import setup_logging
+    setup_logging(console_only=True)
     for tf in TIMEFRAMES:
         df = load_candles(tf)
         print(tf, len(df), "candles")

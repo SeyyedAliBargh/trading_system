@@ -1,5 +1,6 @@
 import re
 import html
+import logging
 from datetime import datetime, timedelta, timezone
 
 import feedparser
@@ -9,6 +10,9 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from db import engine, News, init_db
+from log_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 FEEDS = {
     "coindesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -41,11 +45,14 @@ def collect_news():
             r = requests.get(url, headers=HEADERS, timeout=15)
             r.raise_for_status()
         except Exception as e:
-            print(f"[news] {source} failed: {e}")
+            logger.warning("[news] feed=%s failed: %s", source, e)
             continue
         entries = feedparser.parse(r.content).entries
+        logger.debug("[news] feed=%s fetched items=%d", source, len(entries))
         if not entries:
-            print(f"[news] {source}: 0 entries (status {r.status_code})")
+            logger.warning("[news] feed=%s succeeded with 0 items status=%s", source, r.status_code)
+        else:
+            logger.info("[news] feed=%s succeeded items=%d", source, len(entries))
         for e in entries:
             pp = e.get("published_parsed") or e.get("updated_parsed")
             if not pp or not e.get("link"):
@@ -59,12 +66,19 @@ def collect_news():
                 "fetched_at": now,
             })
     if not rows:
+        logger.info("[news] 0 items collected; new items after dedup=0")
         return 0
     with Session(engine) as s:
-        res = s.execute(insert(News).values(rows).on_conflict_do_nothing())
-        s.commit()
-        print(f"[news] +{res.rowcount} new")
-        return res.rowcount
+        try:
+            res = s.execute(insert(News).values(rows).on_conflict_do_nothing())
+            s.commit()
+            stored = res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0
+            logger.info("[news] total fetched=%d | new items after dedup=%d", len(rows), stored)
+            return stored
+        except Exception:
+            logger.exception("Failed to insert/commit news items to database")
+            s.rollback()
+            raise
     
 
 def get_recent_news(minutes=60, now=None, limit=8):
@@ -91,6 +105,7 @@ def get_recent_news(minutes=60, now=None, limit=8):
 
 
 if __name__ == "__main__":
+    setup_logging(console_only=True)
     init_db()
     print("new rows:", collect_news())
     for n in get_recent_news(minutes=360):

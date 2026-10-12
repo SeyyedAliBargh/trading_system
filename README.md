@@ -49,6 +49,7 @@ trade/
 ├── fng.py             # Fear & Greed fetcher (alternative.me)
 ├── label.py           # fills price_5m/15m/30m for past signals
 ├── llm_input.py       # build_llm_input() and check_fresh()
+├── log_config.py      # UTC console and rotating file logging
 ├── main.py            # collectors + scheduler (also runs analyze and label)
 ├── news.py            # RSS collection and get_recent_news(minutes=60)
 ├── requirements.txt
@@ -70,6 +71,10 @@ Create a `.env` file:
 OPENROUTER_API_KEY=...
 GROQ_API_KEY=...
 GROQ_MODEL=qwen/qwen3.8-27b
+LOG_LEVEL=INFO
+LOG_DIR=logs
+LOG_MAX_MB=5
+LOG_BACKUPS=10
 ```
 
 Run:
@@ -84,7 +89,11 @@ python analyze.py       # one manual analysis
 python check.py         # inspect the latest DB rows
 ```
 
-At startup, `analyze.py` prints `[analyze] attempts: ...` showing the real provider order. Every 5 minutes you should see `[analyze] ...` and `[label] filled N` in the console.
+At startup, `analyze.py` logs `[analyze] attempts: ...` showing the real provider order. Every 5 minutes you should see analysis and label messages in the console.
+
+## Logging
+
+`main.py` writes UTC logs to the console and to `logs/app.log`. Warning and higher severity messages are also written to `logs/errors.log`. Both files rotate by size; `app.log` uses `LOG_MAX_MB` and `LOG_BACKUPS` (5 MB and 10 backups by default), while `errors.log` uses 2 MB and 5 backups. Set `LOG_LEVEL` (default `INFO`) and `LOG_DIR` (default `logs`) in `.env` to configure logging. Manual scripts use console-only logging so they cannot collide with the scheduler's rotating files. Read the latest events in `app.log`, and check `errors.log` for warnings and errors. Never place secrets in log messages.
 
 > `main.py` must keep running. Funding and OI are point-in-time values and cannot be backfilled for downtime, and `analyze` writes `skipped` rows while data is stale. Candles are only backfilled up to 100 candles back (about 1h40m for 1m). Code changes take effect only after restarting `main.py`.
 

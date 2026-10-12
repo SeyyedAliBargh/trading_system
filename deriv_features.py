@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 from sqlalchemy import text
 
@@ -5,16 +6,17 @@ from db import engine
 from features import EXCHANGE, load_candles
 
 SWAP = "BTC/USDT:USDT"  # با خروجی کوئری پایین چک کن
+logger = logging.getLogger(__name__)
 
 
 def load_derivs(limit=120, symbol=SWAP):
     q = text(
         "select ts, funding_rate, next_funding_ts, oi_base from derivatives "
-        "where exchange=:ex and symbol=:sym order by ts desc limit :n"
+        "where symbol=:sym order by ts desc limit :n"
     )
-    df = pd.read_sql(q, engine, params={"ex": EXCHANGE, "sym": symbol, "n": limit},
+    df = pd.read_sql(q, engine, params={"sym": symbol, "n": limit},
                      parse_dates=["ts", "next_funding_ts"])
-    return df.sort_values("ts").reset_index(drop=True)
+    return df.sort_values("ts").drop_duplicates(subset=["ts"], keep="last").reset_index(drop=True)
 
 
 def _oi_chg(df, minutes):
@@ -52,4 +54,6 @@ def derivative_features():
 
 
 if __name__ == "__main__":
+    from log_config import setup_logging
+    setup_logging(console_only=True)
     print(derivative_features())

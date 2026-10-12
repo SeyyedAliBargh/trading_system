@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -6,6 +7,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 DB_URL = "sqlite:///trade.db"
 engine = create_engine(DB_URL)
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -80,12 +82,15 @@ class Signal(Base):
 
     
 def init_db():
-    Base.metadata.create_all(engine)
+    try:
+        Base.metadata.create_all(engine)
+        logger.info("Database schema initialized")
+    except Exception:
+        logger.exception("Database initialization failed")
+        raise
 
 
 def ms_to_dt(ms):
     if ms is None:
         return None
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None)
-
-

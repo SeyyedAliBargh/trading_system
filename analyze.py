@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import openai
@@ -9,24 +11,13 @@ from sqlalchemy.orm import Session
 
 from db import Signal, engine
 from llm_input import build_llm_input
+from log_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-PROMPT_VERSION = "v1"
-
-or_client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    max_retries=0,
-    timeout=45,
-)
-
-OR_MODELS = [
-    "inclusionai/ling-3.1-flash:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3.5-lightning:free",
-]
+PROMPT_VERSION = "v2"
 
 ATTEMPTS = []  # (provider, client, model) به ترتیب تلاش
 if os.getenv("GROQ_API_KEY") and os.getenv("GROQ_MODEL"):
@@ -37,8 +28,25 @@ if os.getenv("GROQ_API_KEY") and os.getenv("GROQ_MODEL"):
         timeout=45,
     )
     ATTEMPTS.append(("groq", groq, os.environ["GROQ_MODEL"]))
-    
-print("[analyze] attempts:", [f"{n}/{m}" for n, _, m in ATTEMPTS])
+
+OR_MODELS = [
+    "inclusionai/ling-3.1-flash:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3.5-lightning:free",
+]
+
+if os.getenv("OPENROUTER_API_KEY"):
+    or_client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        max_retries=0,
+        timeout=45,
+    )
+    for model in OR_MODELS:
+        ATTEMPTS.append(("openrouter", or_client, model))
+
+logger.info("[analyze] attempts: %s", [f"{n}/{m}" for n, _, m in ATTEMPTS])
 
 # v1
 # SYSTEM = """You are a BTC/USDT signal analyst. The user already holds BTC and wants to know, for the next 5-15 minutes, whether to BUY more, SELL some, or HOLD.
@@ -64,9 +72,10 @@ Reply with ONLY a JSON object:
 {"signal": "BUY|SELL|HOLD", "confidence": 0.0, "reason": "..."}
 Output must start with { and contain no other text."""
 
-def save_signal(out, data, raw, model):
+def save_signal(out, data, raw, model, exit_path="unknown"):
     now = datetime.now(timezone.utc).replace(tzinfo=None, second=0, microsecond=0)
     usage = out.get("usage") or {}
+    logger.info("Storing signal row in signals table via exit path: %s", exit_path)
     with Session(engine) as s:
         s.add(Signal(
             ts=now,
@@ -83,30 +92,40 @@ def save_signal(out, data, raw, model):
             skipped=bool(out.get("skipped")),
             problems=out.get("problems"),
         ))
-        s.commit()
+        try:
+            s.commit()
+            logger.debug("Committed signal row (exit_path=%s, model=%s)", exit_path, model)
+        except Exception:
+            logger.exception("Failed to commit signal row (exit_path=%s)", exit_path)
+            s.rollback()
+            raise
 
 
-def skip(problem, close, data, raw=None, model=None, usage=None):
+def skip(problem, close, data, raw=None, model=None, usage=None, exit_path="skip"):
+    logger.warning("Analysis skipped: exact reason: %s", problem)
     out = {"signal": None, "skipped": True, "problems": [problem], "close": close}
     if usage:
         out["usage"] = usage
-    save_signal(out, data, raw, model)
+    save_signal(out, data, raw, model, exit_path=exit_path)
     return out
 
 
 def analyze(btc_amount, usdt_cash):
     data, problems = build_llm_input(btc_amount, usdt_cash)
-    close = data["features"]["1m"]["close"]
+    close = (data.get("features", {}).get("1m") or {}).get("close")
 
     if problems:
+        problem_desc = f"Freshness check failed: {problems}"
+        logger.warning("Analysis skipped: exact reason: %s", problem_desc)
         out = {"signal": None, "skipped": True, "problems": problems, "close": close}
-        save_signal(out, data, None, None)
+        save_signal(out, data, None, None, exit_path="freshness_check")
         return out
 
     errors = []
     resp = None
     for name, cl, model in ATTEMPTS:
         tag = f"{name}/{model}"
+        started = time.monotonic()
         try:
             r = cl.chat.completions.create(
                 model=model,
@@ -116,23 +135,61 @@ def analyze(btc_amount, usdt_cash):
                     {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
                 ],
             )
+            latency = time.monotonic() - started
             if not r.choices:  # گاهی ۲۰۰ با بدنه‌ی error
-                errors.append(f"{tag}: no choices {getattr(r, 'error', None)}")
+                cause = f"no choices {getattr(r, 'error', None)}"
+                errors.append(f"{tag}: {cause}")
+                logger.warning(
+                    "Attempt failed provider=%s model=%s cause=%s latency=%.3fs",
+                    name, model, cause, latency
+                )
                 continue
             resp = r
+            u = r.usage
+            tokens_in = u.prompt_tokens if u else None
+            tokens_out = u.completion_tokens if u else None
+            logger.info(
+                "Attempt succeeded provider=%s model=%s latency=%.3fs tokens_in=%s tokens_out=%s",
+                name, model, latency, tokens_in, tokens_out
+            )
             break
         except openai.APITimeoutError:
+            latency = time.monotonic() - started
             errors.append(f"{tag}: timeout")
+            logger.warning(
+                "Attempt failed provider=%s model=%s cause=timeout latency=%.3fs",
+                name, model, latency
+            )
         except openai.APIStatusError as e:  # شامل 429 و 404 و 5xx
+            latency = time.monotonic() - started
+            cause = f"HTTP {e.status_code}"
             errors.append(f"{tag}: http {e.status_code} {getattr(e, 'body', e)}")
+            logger.warning(
+                "Attempt failed provider=%s model=%s cause=%s latency=%.3fs",
+                name, model, cause, latency
+            )
         except openai.APIConnectionError as e:
+            latency = time.monotonic() - started
+            cause = f"connection error: {e}"
             errors.append(f"{tag}: connection {e}")
+            logger.warning(
+                "Attempt failed provider=%s model=%s cause=%s latency=%.3fs",
+                name, model, cause, latency
+            )
         except Exception as e:
+            latency = time.monotonic() - started
+            cause = f"unexpected error: {type(e).__name__} {e}"
             errors.append(f"{tag}: unexpected {type(e).__name__}: {e}")
+            logger.exception(
+                "Attempt failed provider=%s model=%s cause=%s latency=%.3fs",
+                name, model, cause, latency
+            )
 
     if resp is None:  # همه‌ی مدل‌ها شکست خوردند
+        problem_desc = f"All providers failed: {errors}"
+        logger.warning("Analysis skipped: exact reason: %s", problem_desc)
         out = {"signal": None, "skipped": True, "problems": errors, "close": close}
-        save_signal(out, data, None, None)
+        save_signal(out, data, None, None, exit_path="all_providers_failed")
         return out
 
     choice = resp.choices[0]
@@ -141,21 +198,23 @@ def analyze(btc_amount, usdt_cash):
     usage = {"in": u.prompt_tokens, "out": u.completion_tokens} if u else {}
 
     if choice.finish_reason == "length":
-        return skip("truncated (finish_reason=length)", close, data, txt, resp.model, usage)
+        return skip("truncated (finish_reason=length)", close, data, txt, resp.model, usage, exit_path="truncated_length")
     if not txt:
-        return skip("empty content", close, data, txt, resp.model, usage)
+        return skip("empty content", close, data, txt, resp.model, usage, exit_path="empty_content")
 
     try:
         out = json.loads(txt[txt.index("{"): txt.rindex("}") + 1])
         assert out["signal"] in ("BUY", "SELL", "HOLD")
         out["confidence"] = min(max(float(out["confidence"]), 0.0), 1.0)
     except Exception as e:
-        return skip(f"bad model output: {e}", close, data, txt, resp.model, usage)
+        return skip(f"bad model output: {e}", close, data, txt, resp.model, usage, exit_path="invalid_json")
 
     # قوانین ریسک توسط کد، نه LLM
     if out["signal"] == "BUY" and usdt_cash < 10:
+        logger.info("Risk rule adjusted signal from BUY to HOLD (insufficient USDT)")
         out["signal"], out["reason"] = "HOLD", "موجودی USDT کافی نیست"
     if out["signal"] == "SELL" and btc_amount <= 0:
+        logger.info("Risk rule adjusted signal from SELL to HOLD (no BTC to sell)")
         out["signal"], out["reason"] = "HOLD", "BTC برای فروش نیست"
 
     out["usage"] = usage
@@ -163,9 +222,14 @@ def analyze(btc_amount, usdt_cash):
     out["ts"] = data["now_utc"]
     out["model"] = resp.model
     out["problems"] = errors or None
-    save_signal(out, data, txt, resp.model)
+    logger.info(
+        "Analysis final result: signal=%s confidence=%.2f close=%s (model=%s)",
+        out.get("signal"), out.get("confidence", 0.0), close, resp.model
+    )
+    save_signal(out, data, txt, resp.model, exit_path="success")
     return out
 
 
 if __name__ == "__main__":
+    setup_logging(console_only=True)
     print(json.dumps(analyze(0.05, 1000), ensure_ascii=False, indent=2))

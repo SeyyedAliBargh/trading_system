@@ -1,17 +1,22 @@
+import logging
 from sqlalchemy import text
 from db import engine
+from log_config import setup_logging
 
-with engine.connect() as conn:
-    rows = conn.execute(text(
-        "select ts, funding_rate, oi_base from derivatives order by ts desc limit 5"
-    )).all()
-    for r in rows:
-        print(r)
+logger = logging.getLogger(__name__)
 
+if __name__ == "__main__":
+    setup_logging(console_only=True)
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "select ts, funding_rate, oi_base from derivatives order by ts desc limit 5"
+        )).all()
+        for r in rows:
+            print(r)
 
-with engine.connect() as conn:
-    rows = conn.execute(text(
-        "select ts, value, classification from fear_greed order by ts desc limit 3"
-    )).all()
-    for r in rows:
-        print(r)
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "select ts, value, classification from fear_greed order by ts desc limit 3"
+        )).all()
+        for r in rows:
+            print(r)

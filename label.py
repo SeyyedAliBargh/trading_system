@@ -1,3 +1,5 @@
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import DateTime, bindparam, select, text
@@ -5,6 +7,9 @@ from sqlalchemy.orm import Session
 
 from db import Signal, engine
 from features import EXCHANGE, SPOT
+from log_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 HORIZONS = {"price_5m": 5, "price_15m": 15, "price_30m": 30}
 LOOKBACK_H = 48
@@ -16,9 +21,11 @@ _Q = text(
 
 
 def label_signals():
+    started = time.monotonic()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     since = now - timedelta(hours=LOOKBACK_H)
     done = 0
+    missing = 0
     with Session(engine) as s:
         rows = s.scalars(
             select(Signal).where(
@@ -43,10 +50,13 @@ def label_signals():
                 if px is not None:
                     setattr(sig, col, float(px))
                     done += 1
+                else:
+                    missing += 1
         s.commit()
-    print(f"[label] filled {done}")
+    logger.info("[label] filled %d; target candles not found=%d; duration=%.3fs", done, missing, time.monotonic() - started)
     return done
 
 
 if __name__ == "__main__":
+    setup_logging(console_only=True)
     label_signals()

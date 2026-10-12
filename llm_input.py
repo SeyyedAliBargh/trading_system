@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -9,6 +10,9 @@ from db import Derivative, FearGreed, engine
 from features import EXCHANGE, TIMEFRAMES, compute_features, load_candles
 from news import get_recent_news
 from deriv_features import derivative_features
+from log_config import setup_logging
+
+logger = logging.getLogger(__name__)
 PERP = "BTC/USDT:USDT"
 N_CANDLES = 20
 TF_MIN = {"1m": 1, "15m": 15, "1h": 60}
@@ -27,13 +31,14 @@ def _candle_rows(df, n=N_CANDLES):
 def _latest_derivatives(session):
     row = session.execute(
         select(Derivative)
-        .where(Derivative.exchange == EXCHANGE, Derivative.symbol == PERP)
+        .where(Derivative.symbol == PERP)
         .order_by(Derivative.ts.desc()).limit(1)
     ).scalar_one_or_none()
     if row is None:
         return None
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     return {
+        "exchange": row.exchange,
         "ts": row.ts.isoformat(),
         "age_min": round((now - row.ts).total_seconds() / 60, 1),
         "funding_rate": row.funding_rate,
@@ -86,6 +91,8 @@ def build_llm_input(btc_amount, usdt_cash):
         fng = _latest_fng(session)
 
     problems = check_fresh(dfs, deriv, fng)
+    if problems:
+        logger.warning("Input freshness problems: %s", problems)
 
     data = {
         "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
@@ -99,11 +106,13 @@ def build_llm_input(btc_amount, usdt_cash):
         "news": get_recent_news(minutes=60),
         "portfolio": {"btc": btc_amount, "usdt": usdt_cash},
     }
+    logger.info("Built LLM input: chars=%d", len(json.dumps(data, ensure_ascii=False)))
     return data, problems
 
 
 if __name__ == "__main__":
-    data, problems = build_llm_input(btc_amount=0.05, usdt_cash=1000)
+    setup_logging(console_only=True)
+    data, problems = build_llm_input(btc_amount=0.0, usdt_cash=1000)
     print("problems:", problems)
     print(json.dumps(data, ensure_ascii=False, indent=2))
     print("chars:", len(json.dumps(data, ensure_ascii=False)))

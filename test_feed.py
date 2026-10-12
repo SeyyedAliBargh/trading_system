@@ -1,4 +1,8 @@
 import time
+import logging
+from log_config import setup_logging
+
+logger = logging.getLogger(__name__)
 import requests
 import feedparser
 
@@ -40,6 +44,7 @@ def test(name, url):
 
 
 if __name__ == "__main__":
+    setup_logging(console_only=True)
     for name, url in FEEDS.items():
         test(name, url)
         print()
